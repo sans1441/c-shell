@@ -1,41 +1,44 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <pwd.h>
 #include <string.h>
 #include <limits.h>
-
-void printPath()
-{
-    char username[256];
-    char hostname[256];
-    char path[PATH_MAX];
-
-    uid_t uid = getuid();
-    struct passwd *pw = getpwuid(uid);
-
-    strcpy(username, pw->pw_name);
-    gethostname(hostname, sizeof(hostname));
-    getcwd(path, sizeof(path));
-
-    char *home = pw->pw_dir;
-
-    if(strncmp(path, home, strlen(home)) == 0)
-    {
-        printf("%s@%s:~%s$ ", username, hostname, path + strlen(home));
-    }
-    else
-    {
-        printf("%s@%s:%s$ ", username, hostname, path);
-    }
-}
+#include "lexer.h"
+#include "parser.h"
+#include "prompt.h"
+#include "test.h"
 
 int main()
 {
+    getHomeShell();
+
     while(1)
     {
         printPath();
-        char str[256];
-        fgets(str, sizeof(str), stdin);
+
+        char *line = readLine();
+
+        if(line == NULL)
+        {
+            printf("\n");
+            break;
+        }
+
+        int token_count = 0;
+        Token *tokens = lexer(line, &token_count);
+
+        if(token_count == -1) continue;
+
+        int valid = parser(tokens, token_count);
+
+        if(!valid) printf("cshell: invalid syntax\n");
+
+        else printTokens(tokens, token_count);
+        freeTokens(tokens, token_count);
+        free(line);
     }
-}
+
+    return 0;
+}   
