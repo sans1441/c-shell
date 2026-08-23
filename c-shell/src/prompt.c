@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include "prompt.h"
 
+#define LINE_CAPACITY 256
+
 char shell_home[PATH_MAX];
 
 void getHomeShell()
@@ -46,12 +48,15 @@ void printPath()
 
 char *readLine()
 {
-    char *line = malloc(256);
+    char *line = malloc(LINE_CAPACITY);
 
-    char *result = fgets(line, sizeof(line), stdin);
+    char *result = fgets(line, LINE_CAPACITY, stdin);
 
     if(result == NULL)
+    {
+        free(line);
         return NULL;
+    }
 
     line[strcspn(line, "\n")] = '\0';
 
