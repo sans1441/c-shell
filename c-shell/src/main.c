@@ -11,6 +11,7 @@
 #include "test.h"
 #include "hop.h"
 #include "locate.h"
+#include "reveal.h"
 
 int main()
 {
@@ -48,8 +49,8 @@ int main()
             hop(tokens, token_count, &state);
         else if(token_count > 0 && strcmp(tokens[0].value, "locate") == 0)
             locate(tokens, token_count);
-        // else
-        //     printTokens(tokens, token_count);
+        else if(token_count > 0 && strcmp(tokens[0].value, "reveal") == 0)
+            reveal(tokens, token_count, &state);
 
         freeTokens(tokens, token_count);
         free(line);
