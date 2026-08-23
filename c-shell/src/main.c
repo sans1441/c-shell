@@ -10,6 +10,7 @@
 #include "prompt.h"
 #include "test.h"
 #include "hop.h"
+#include "locate.h"
 
 int main()
 {
@@ -41,13 +42,15 @@ int main()
 
         int valid = parser(tokens, token_count);
 
-        if(!valid) 
+        if(!valid)
             printf("cshell: invalid syntax\n");
-        else if(token_count > 0 && strcmp(tokens[0].value, "hop") == 0) 
+        else if(token_count > 0 && strcmp(tokens[0].value, "hop") == 0)
             hop(tokens, token_count, &state);
-        else
-            printTokens(tokens, token_count);
-        
+        else if(token_count > 0 && strcmp(tokens[0].value, "locate") == 0)
+            locate(tokens, token_count);
+        // else
+        //     printTokens(tokens, token_count);
+
         freeTokens(tokens, token_count);
         free(line);
     }
