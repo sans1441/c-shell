@@ -7,7 +7,7 @@ CFLAGS = -std=c23 \
          -Wno-unused-parameter \
          -fno-asm
 
-TARGET = shell.out
+TARGET = shell
 
 SRC = $(wildcard src/*.c)
 OBJ = $(SRC:.c=.o)

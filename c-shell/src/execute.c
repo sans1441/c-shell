@@ -160,17 +160,12 @@ void executeCommand(Token *tokens, int token_count)
 
     for(int i = 0; i <= token_count; i++)
     {
-        if(i == token_count ||
-           tokens[i].type == TOKEN_PIPE ||
-           tokens[i].type == TOKEN_SEMI ||
-           tokens[i].type == TOKEN_AMP)
+        if(i == token_count || tokens[i].type == TOKEN_PIPE || tokens[i].type == TOKEN_SEMI || tokens[i].type == TOKEN_AMP)
         {
             start_positions[command_index] = start;
             end_positions[command_index] = i;
 
-            if(i == token_count ||
-               tokens[i].type == TOKEN_SEMI ||
-               tokens[i].type == TOKEN_AMP)
+            if(i == token_count || tokens[i].type == TOKEN_SEMI || tokens[i].type == TOKEN_AMP)
                 break;
 
             command_index++;
