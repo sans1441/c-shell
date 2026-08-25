@@ -76,9 +76,7 @@ void copyFileToPipe(int fd, int pipe_write)
 
         while(bytes_written < bytes_read)
         {
-            result = write(pipe_write,
-                           buffer + bytes_written,
-                           bytes_read - bytes_written);
+            result = write(pipe_write, buffer + bytes_written, bytes_read - bytes_written);
 
             if(result <= 0)
                 return;
@@ -106,9 +104,7 @@ void copyPipeToFiles(int pipe_read, int *output_fds, int output_count)
 
             while(bytes_written < bytes_read)
             {
-                int result = write(output_fds[i],
-                                   buffer + bytes_written,
-                                   bytes_read - bytes_written);
+                int result = write(output_fds[i], buffer + bytes_written, bytes_read - bytes_written);
 
                 if(result <= 0)
                     return;
@@ -133,258 +129,388 @@ void closeOutputFiles(int *output_fds, int output_count)
 
 void executeCommand(Token *tokens, int token_count)
 {
-    char *args[token_count + 1];
+    int command_count = 1;
 
-    int input_fds[token_count];
-    int output_fds[token_count];
-
-    int input_count = 0;
-    int output_count = 0;
-    int argument_count = 0;
-
-    for(int i = 0; i < token_count;)
+    for(int i = 0; i < token_count; i++)
     {
-        if(tokens[i].type == TOKEN_SEMI ||
-           tokens[i].type == TOKEN_AMP ||
-           tokens[i].type == TOKEN_PIPE)
+        if(tokens[i].type == TOKEN_PIPE)
+            command_count++;
+        else if(tokens[i].type == TOKEN_SEMI || tokens[i].type == TOKEN_AMP)
             break;
+    }
 
-        if(tokens[i].type == TOKEN_LT)
+    char *args[command_count][token_count + 1];
+
+    int input_fds[command_count][token_count];
+    int output_fds[command_count][token_count];
+
+    int input_count[command_count];
+    int output_count[command_count];
+    int argument_count[command_count];
+
+    int start_positions[command_count];
+    int end_positions[command_count];
+
+    int pipes[command_count][2];
+
+    int pid_count = 0;
+
+    int command_index = 0;
+    int start = 0;
+
+    for(int i = 0; i <= token_count; i++)
+    {
+        if(i == token_count ||
+           tokens[i].type == TOKEN_PIPE ||
+           tokens[i].type == TOKEN_SEMI ||
+           tokens[i].type == TOKEN_AMP)
         {
-            i++;
+            start_positions[command_index] = start;
+            end_positions[command_index] = i;
 
-            if(i >= token_count || tokens[i].type != TOKEN_WORD)
-            {
-                printf("cshell: invalid syntax\n");
+            if(i == token_count ||
+               tokens[i].type == TOKEN_SEMI ||
+               tokens[i].type == TOKEN_AMP)
+                break;
 
-                closeInputFiles(input_fds, input_count);
-                closeOutputFiles(output_fds, output_count);
-
-                return;
-            }
-
-            int fd = open(tokens[i].value, O_RDONLY);
-
-            if(fd == -1)
-            {
-                printf("cshell: no such file or directory\n");
-
-                closeInputFiles(input_fds, input_count);
-                closeOutputFiles(output_fds, output_count);
-
-                return;
-            }
-
-            input_fds[input_count] = fd;
-            input_count++;
-
-            i++;
-        }
-        else if(tokens[i].type == TOKEN_GT)
-        {
-            i++;
-
-            if(i >= token_count || tokens[i].type != TOKEN_WORD)
-            {
-                printf("cshell: invalid syntax\n");
-
-                closeInputFiles(input_fds, input_count);
-                closeOutputFiles(output_fds, output_count);
-
-                return;
-            }
-
-            int fd = open(tokens[i].value,
-                          O_WRONLY | O_CREAT | O_TRUNC,
-                          0644);
-
-            if(fd == -1)
-            {
-                printf("cshell: unable to create file for writing\n");
-
-                closeInputFiles(input_fds, input_count);
-                closeOutputFiles(output_fds, output_count);
-
-                return;
-            }
-
-            output_fds[output_count] = fd;
-            output_count++;
-
-            i++;
-        }
-        else if(tokens[i].type == TOKEN_GTGT)
-        {
-            i++;
-
-            if(i >= token_count || tokens[i].type != TOKEN_WORD)
-            {
-                printf("cshell: invalid syntax\n");
-
-                closeInputFiles(input_fds, input_count);
-                closeOutputFiles(output_fds, output_count);
-
-                return;
-            }
-
-            int fd = open(tokens[i].value,
-                          O_WRONLY | O_CREAT | O_APPEND,
-                          0644);
-
-            if(fd == -1)
-            {
-                printf("cshell: unable to create file for writing\n");
-
-                closeInputFiles(input_fds, input_count);
-                closeOutputFiles(output_fds, output_count);
-
-                return;
-            }
-
-            output_fds[output_count] = fd;
-            output_count++;
-
-            i++;
-        }
-        else
-        {
-            args[argument_count] = tokens[i].value;
-            argument_count++;
-            i++;
+            command_index++;
+            start = i + 1;
         }
     }
 
-    if(argument_count == 0)
+    for(int command = 0; command < command_count; command++)
     {
-        closeInputFiles(input_fds, input_count);
-        closeOutputFiles(output_fds, output_count);
-        return;
-    }
+        input_count[command] = 0;
+        output_count[command] = 0;
+        argument_count[command] = 0;
 
-    char *original = args[0];
-    int path_only = 0;
+        int i = start_positions[command];
+        int end = end_positions[command];
 
-    if(args[0][0] == '%')
-    {
-        path_only = 1;
-        args[0]++;
-    }
-
-    args[argument_count] = NULL;
-
-    if(input_count == 0 && output_count == 0)
-    {
-        int pid = fork();
-
-        if(pid == 0)
-            runCommand(args, argument_count, original, path_only);
-
-        else if(pid > 0)
-            wait(NULL);
-
-        return;
-    }
-
-    int input_pipe[2];
-    int output_pipe[2];
-
-    if(input_count > 0)
-    {
-        if(pipe(input_pipe) != 0)
+        while(i < end)
         {
-            closeInputFiles(input_fds, input_count);
-            closeOutputFiles(output_fds, output_count);
+            if(tokens[i].type == TOKEN_LT)
+            {
+                i++;
+
+                if(i >= end || tokens[i].type != TOKEN_WORD)
+                {
+                    printf("cshell: invalid syntax\n");
+
+                    for(int j = 0; j < command_count; j++)
+                    {
+                        closeInputFiles(input_fds[j], input_count[j]);
+                        closeOutputFiles(output_fds[j], output_count[j]);
+                    }
+
+                    return;
+                }
+
+                int fd = open(tokens[i].value, O_RDONLY);
+
+                if(fd == -1)
+                {
+                    printf("cshell: no such file or directory\n");
+
+                    for(int j = 0; j < command_count; j++)
+                    {
+                        closeInputFiles(input_fds[j], input_count[j]);
+                        closeOutputFiles(output_fds[j], output_count[j]);
+                    }
+
+                    return;
+                }
+
+                input_fds[command][input_count[command]] = fd;
+                input_count[command]++;
+
+                i++;
+            }
+            else if(tokens[i].type == TOKEN_GT)
+            {
+                i++;
+
+                if(i >= end || tokens[i].type != TOKEN_WORD)
+                {
+                    printf("cshell: invalid syntax\n");
+
+                    for(int j = 0; j < command_count; j++)
+                    {
+                        closeInputFiles(input_fds[j], input_count[j]);
+                        closeOutputFiles(output_fds[j], output_count[j]);
+                    }
+
+                    return;
+                }
+
+                int fd = open(tokens[i].value, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+                if(fd == -1)
+                {
+                    printf("cshell: unable to create file for writing\n");
+
+                    for(int j = 0; j < command_count; j++)
+                    {
+                        closeInputFiles(input_fds[j], input_count[j]);
+                        closeOutputFiles(output_fds[j], output_count[j]);
+                    }
+
+                    return;
+                }
+
+                output_fds[command][output_count[command]] = fd;
+                output_count[command]++;
+
+                i++;
+            }
+            else if(tokens[i].type == TOKEN_GTGT)
+            {
+                i++;
+
+                if(i >= end || tokens[i].type != TOKEN_WORD)
+                {
+                    printf("cshell: invalid syntax\n");
+
+                    for(int j = 0; j < command_count; j++)
+                    {
+                        closeInputFiles(input_fds[j], input_count[j]);
+                        closeOutputFiles(output_fds[j], output_count[j]);
+                    }
+
+                    return;
+                }
+
+                int fd = open(tokens[i].value, O_WRONLY | O_CREAT | O_APPEND, 0644);
+
+                if(fd == -1)
+                {
+                    printf("cshell: unable to create file for writing\n");
+
+                    for(int j = 0; j < command_count; j++)
+                    {
+                        closeInputFiles(input_fds[j], input_count[j]);
+                        closeOutputFiles(output_fds[j], output_count[j]);
+                    }
+
+                    return;
+                }
+
+                output_fds[command][output_count[command]] = fd;
+                output_count[command]++;
+
+                i++;
+            }
+            else
+            {
+                args[command][argument_count[command]] = tokens[i].value;
+                argument_count[command]++;
+                i++;
+            }
+        }
+
+        if(argument_count[command] == 0)
+        {
+            printf("cshell: invalid syntax\n");
+
+            for(int j = 0; j < command_count; j++)
+            {
+                closeInputFiles(input_fds[j], input_count[j]);
+                closeOutputFiles(output_fds[j], output_count[j]);
+            }
+
+            return;
+        }
+
+        args[command][argument_count[command]] = NULL;
+    }
+
+    for(int i = 0; i < command_count - 1; i++)
+    {
+        if(pipe(pipes[i]) != 0)
+        {
+            for(int j = 0; j < command_count; j++)
+            {
+                closeInputFiles(input_fds[j], input_count[j]);
+                closeOutputFiles(output_fds[j], output_count[j]);
+            }
+
             return;
         }
     }
 
-    if(output_count > 0)
+    for(int command = 0; command < command_count; command++)
     {
-        if(pipe(output_pipe) != 0)
+        int input_pipe[2] = {-1, -1};
+        int output_pipe[2] = {-1, -1};
+
+        if(input_count[command] > 0)
         {
-            if(input_count > 0)
+            if(pipe(input_pipe) != 0)
+                return;
+
+            int writer_pid = fork();
+
+            if(writer_pid == 0)
             {
                 close(input_pipe[0]);
+
+                for(int j = 0; j < command_count; j++)
+                {
+                    if(j != command)
+                    {
+                        closeInputFiles(input_fds[j], input_count[j]);
+                        closeOutputFiles(output_fds[j], output_count[j]);
+                    }
+                }
+
+                for(int j = 0; j < command_count - 1; j++)
+                {
+                    close(pipes[j][0]);
+                    close(pipes[j][1]);
+                }
+
+                for(int j = 0; j < input_count[command]; j++)
+                {
+                    copyFileToPipe(input_fds[command][j], input_pipe[1]);
+                    close(input_fds[command][j]);
+                }
+
                 close(input_pipe[1]);
+                exit(0);
             }
 
-            closeInputFiles(input_fds, input_count);
-            closeOutputFiles(output_fds, output_count);
-
-            return;
+            pid_count++;
         }
-    }
 
-    int command_pid = fork();
-
-    if(command_pid == 0)
-    {
-        if(input_count > 0)
+        if(output_count[command] > 0)
         {
+            if(pipe(output_pipe) != 0)
+                return;
+
+            int reader_pid = fork();
+
+            if(reader_pid == 0)
+            {
+                close(output_pipe[1]);
+
+                for(int j = 0; j < command_count; j++)
+                {
+                    closeInputFiles(input_fds[j], input_count[j]);
+
+                    if(j != command)
+                        closeOutputFiles(output_fds[j], output_count[j]);
+                }
+
+                for(int j = 0; j < command_count - 1; j++)
+                {
+                    close(pipes[j][0]);
+                    close(pipes[j][1]);
+                }
+
+                copyPipeToFiles(output_pipe[0], output_fds[command], output_count[command]);
+
+                close(output_pipe[0]);
+                closeOutputFiles(output_fds[command], output_count[command]);
+
+                exit(0);
+            }
+
+            pid_count++;
+        }
+
+        int command_pid = fork();
+
+        if(command_pid == 0)
+        {
+            if(input_count[command] > 0)
+            {
+                close(input_pipe[1]);
+
+                dup2(input_pipe[0], STDIN_FILENO);
+
+                close(input_pipe[0]);
+            }
+            else if(command > 0)
+            {
+                dup2(pipes[command - 1][0], STDIN_FILENO);
+            }
+
+            if(output_count[command] > 0)
+            {
+                close(output_pipe[0]);
+
+                dup2(output_pipe[1], STDOUT_FILENO);
+
+                close(output_pipe[1]);
+            }
+            else if(command < command_count - 1)
+            {
+                dup2(pipes[command][1], STDOUT_FILENO);
+            }
+
+            for(int j = 0; j < command_count - 1; j++)
+            {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+
+            if(input_pipe[0] != -1)
+                close(input_pipe[0]);
+
+            if(input_pipe[1] != -1)
+                close(input_pipe[1]);
+
+            if(output_pipe[0] != -1)
+                close(output_pipe[0]);
+
+            if(output_pipe[1] != -1)
+                close(output_pipe[1]);
+
+            for(int j = 0; j < command_count; j++)
+            {
+                closeInputFiles(input_fds[j], input_count[j]);
+                closeOutputFiles(output_fds[j], output_count[j]);
+            }
+
+            char *original = args[command][0];
+            int path_only = 0;
+
+            if(args[command][0][0] == '%')
+            {
+                path_only = 1;
+                args[command][0]++;
+            }
+
+            runCommand(args[command], argument_count[command], original, path_only);
+        }
+
+        pid_count++;
+
+        if(input_pipe[0] != -1)
+            close(input_pipe[0]);
+
+        if(input_pipe[1] != -1)
             close(input_pipe[1]);
 
-            dup2(input_pipe[0], STDIN_FILENO);
-
-            close(input_pipe[0]);
-        }
-
-        if(output_count > 0)
-        {
+        if(output_pipe[0] != -1)
             close(output_pipe[0]);
 
-            dup2(output_pipe[1], STDOUT_FILENO);
-
+        if(output_pipe[1] != -1)
             close(output_pipe[1]);
-        }
-
-        closeInputFiles(input_fds, input_count);
-        closeOutputFiles(output_fds, output_count);
-
-        runCommand(args, argument_count, original, path_only);
     }
 
-    int writer_pid = -1;
-
-    if(input_count > 0)
+    for(int i = 0; i < command_count - 1; i++)
     {
-        writer_pid = fork();
-
-        if(writer_pid == 0)
-        {
-            close(input_pipe[0]);
-
-            for(int i = 0; i < input_count; i++)
-            {
-                copyFileToPipe(input_fds[i], input_pipe[1]);
-                close(input_fds[i]);
-            }
-
-            close(input_pipe[1]);
-            exit(0);
-        }
+        close(pipes[i][0]);
+        close(pipes[i][1]);
     }
 
-    if(input_count > 0)
+    for(int i = 0; i < command_count; i++)
     {
-        close(input_pipe[0]);
-        close(input_pipe[1]);
+        closeInputFiles(input_fds[i], input_count[i]);
+        closeOutputFiles(output_fds[i], output_count[i]);
     }
 
-    closeInputFiles(input_fds, input_count);
-
-    if(output_count > 0)
-    {
-        close(output_pipe[1]);
-
-        copyPipeToFiles(output_pipe[0], output_fds, output_count);
-
-        close(output_pipe[0]);
-    }
-
-    closeOutputFiles(output_fds, output_count);
-
-    wait(NULL);
-
-    if(writer_pid > 0)
+    for(int i = 0; i < pid_count; i++)
         wait(NULL);
 }
