@@ -13,6 +13,7 @@
 #include "locate.h"
 #include "reveal.h"
 #include "peek.h"
+#include "execute.h"
 
 int main()
 {
@@ -54,6 +55,8 @@ int main()
             reveal(tokens, token_count, &state);
         else if(token_count > 0 && strcmp(tokens[0].value, "peek") == 0)
             peek(tokens, token_count);
+        else if(token_count > 0)
+            executeCommand(tokens, token_count);
 
         freeTokens(tokens, token_count);
         free(line);
