@@ -1,20 +1,12 @@
 #ifndef HOP_H
 #define HOP_H
 
-#include <limits.h>
 #include "lexer.h"
+#include <limits.h>
 
-typedef enum
-{
-    HOP_HOME,
-    HOP_CURRENT,
-    HOP_PARENT,
-    HOP_PREVIOUS,
-    HOP_PATH
-} HopType;
+typedef enum { HOP_HOME, HOP_CURRENT, HOP_PARENT, HOP_PREVIOUS, HOP_PATH } HopType;
 
-typedef struct
-{
+typedef struct {
     char home[PATH_MAX];
     char previous_dir[PATH_MAX];
     int has_previous;

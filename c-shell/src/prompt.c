@@ -1,24 +1,25 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <pwd.h>
-#include <string.h>
-#include <limits.h>
-#include <stdlib.h>
 #include "prompt.h"
+#include "jobs.h"
+#include <errno.h>
+#include <limits.h>
+#include <poll.h>
+#include <pwd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #define LINE_CAPACITY 1026
 
 char shell_home[PATH_MAX];
 
-void getHomeShell()
-{
+void getHomeShell() {
     getcwd(shell_home, sizeof(shell_home));
     // printf("shell_home = %s\n", shell_home);
 }
 
-void printPath()
-{
+void printPath() {
     char username[256];
     char hostname[256];
     char path[PATH_MAX];
@@ -32,33 +33,61 @@ void printPath()
 
     int home_length = strlen(shell_home);
 
-    if(strcmp(path, shell_home) == 0)
-    {
+    if (strcmp(path, shell_home) == 0) {
         printf("%s@%s:~$ ", username, hostname);
-    }
-    else if(strncmp(path, shell_home, home_length) == 0 && path[home_length] == '/')
-    {
+    } else if (strncmp(path, shell_home, home_length) == 0 && path[home_length] == '/') {
         printf("%s@%s:~%s$ ", username, hostname, path + home_length);
-    }
-    else
-    {
+    } else {
         printf("%s@%s:%s$ ", username, hostname, path);
     }
+
+    fflush(stdout);
 }
 
-char *readLine()
-{
+char *readLine() {
     char *line = malloc(LINE_CAPACITY);
+    size_t length = 0;
+    if (line == NULL) return NULL;
 
-    char *result = fgets(line, LINE_CAPACITY, stdin);
+    while (1) {
+        struct pollfd descriptors[2];
+        descriptors[0].fd = STDIN_FILENO;
+        descriptors[0].events = POLLIN;
+        descriptors[1].fd = jobsNotificationFd();
+        descriptors[1].events = POLLIN;
 
-    if(result == NULL)
-    {
-        free(line);
-        return NULL;
+        int result = poll(descriptors, 2, -1);
+        if (result == -1) {
+            if (errno == EINTR) continue;
+            free(line);
+            return NULL;
+        }
+
+        if (descriptors[1].revents & POLLIN) {
+            jobsProcessNotifications(1);
+            if (length > 0) write(STDOUT_FILENO, line, length);
+        }
+
+        if (!(descriptors[0].revents & (POLLIN | POLLHUP))) continue;
+
+        char character;
+        ssize_t bytes = read(STDIN_FILENO, &character, 1);
+        if (bytes == 0) {
+            if (length == 0) {
+                free(line);
+                return NULL;
+            }
+            break;
+        }
+        if (bytes == -1) {
+            if (errno == EINTR) continue;
+            free(line);
+            return NULL;
+        }
+        if (character == '\n') break;
+        if (length < LINE_CAPACITY - 1) line[length++] = character;
     }
 
-    line[strcspn(line, "\n")] = '\0';
-
+    line[length] = '\0';
     return line;
 }

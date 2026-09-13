@@ -1,8 +1,11 @@
 #ifndef EXECUTE_H
 #define EXECUTE_H
 
-#include "lexer.h"
+#include "command.h"
+#include "hop.h"
 
-void executeCommand(Token *tokens, int token_count);
+typedef enum { EXECUTION_OK, EXECUTION_LAUNCH_FAILED } ExecutionResult;
+
+void executeLine(CommandLine *line, ShellState *state);
 
 #endif

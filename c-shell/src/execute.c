@@ -1,511 +1,350 @@
+#include "execute.h"
+#include "hop.h"
+#include "jobs.h"
+#include "locate.h"
+#include "peek.h"
+#include "reveal.h"
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
-#include <limits.h>
-#include "execute.h"
+#include <unistd.h>
 
-void runCommand(char **args, int argument_count, char *original, int path_only)
-{
-    args[argument_count] = NULL;
+extern char **environ;
 
-    int has_slash = 0;
+static int isBuiltin(const char *name) { return strcmp(name, "hop") == 0 || strcmp(name, "reveal") == 0 || strcmp(name, "peek") == 0 || strcmp(name, "locate") == 0; }
 
-    for(int i = 0; args[0][i] != '\0'; i++)
-    {
-        if(args[0][i] == '/')
-        {
-            has_slash = 1;
-            break;
+static int runBuiltin(const Command *command, ShellState *state) {
+    Token *tokens = calloc(command->argc, sizeof(Token));
+    if (tokens == NULL) return 1;
+
+    for (size_t i = 0; i < command->argc; i++) {
+        tokens[i].type = TOKEN_WORD;
+        tokens[i].value = command->argv[i];
+    }
+
+    if (strcmp(command->argv[0], "hop") == 0)
+        hop(tokens, (int)command->argc, state);
+    else if (strcmp(command->argv[0], "reveal") == 0)
+        reveal(tokens, (int)command->argc, state);
+    else if (strcmp(command->argv[0], "peek") == 0)
+        peek(tokens, (int)command->argc);
+    else if (strcmp(command->argv[0], "locate") == 0)
+        locate(tokens, (int)command->argc);
+
+    free(tokens);
+    return 0;
+}
+
+static char *resolveCommand(const char *name) {
+    const char *lookup = name;
+    if (name[0] == '%') lookup++;
+
+    struct stat info;
+    if (strchr(lookup, '/') != NULL) {
+        if (stat(lookup, &info) == 0 && S_ISREG(info.st_mode) && access(lookup, X_OK) == 0) return strdup(lookup);
+        return NULL;
+    }
+
+    if (name[0] != '%' && stat(lookup, &info) == 0 && S_ISREG(info.st_mode) && access(lookup, X_OK) == 0) {
+        char cwd[4096];
+        if (getcwd(cwd, sizeof(cwd)) == NULL) return NULL;
+        size_t length = strlen(cwd) + strlen(lookup) + 2;
+        char *path = malloc(length);
+        if (path != NULL) snprintf(path, length, "%s/%s", cwd, lookup);
+        return path;
+    }
+
+    const char *path_env = getenv("PATH");
+    if (path_env == NULL) return NULL;
+
+    char *path_copy = strdup(path_env);
+    if (path_copy == NULL) return NULL;
+
+    char *save = NULL;
+    for (char *directory = strtok_r(path_copy, ":", &save); directory != NULL; directory = strtok_r(NULL, ":", &save)) {
+        size_t length = strlen(directory) + strlen(lookup) + 2;
+        char *candidate = malloc(length);
+        if (candidate == NULL) continue;
+        snprintf(candidate, length, "%s/%s", directory, lookup);
+        if (stat(candidate, &info) == 0 && S_ISREG(info.st_mode) && access(candidate, X_OK) == 0) {
+            free(path_copy);
+            return candidate;
+        }
+        free(candidate);
+    }
+
+    free(path_copy);
+    return NULL;
+}
+
+static void copyFilesToPipe(const int *files, size_t count, int write_fd) {
+    char buffer[4096];
+    for (size_t i = 0; i < count; i++) {
+        ssize_t bytes;
+        while ((bytes = read(files[i], buffer, sizeof(buffer))) > 0) {
+            ssize_t written = 0;
+            while (written < bytes) {
+                ssize_t result = write(write_fd, buffer + written, (size_t)(bytes - written));
+                if (result <= 0) return;
+                written += result;
+            }
+        }
+        close(files[i]);
+    }
+}
+
+static void copyPipeToFiles(int read_fd, const int *files, size_t count) {
+    char buffer[4096];
+    ssize_t bytes;
+    while ((bytes = read(read_fd, buffer, sizeof(buffer))) > 0) {
+        for (size_t i = 0; i < count; i++) {
+            ssize_t written = 0;
+            while (written < bytes) {
+                ssize_t result = write(files[i], buffer + written, (size_t)(bytes - written));
+                if (result <= 0) return;
+                written += result;
+            }
+        }
+    }
+}
+
+static void closeFiles(int *files, int count) {
+    for (int i = 0; i < count; i++) close(files[i]);
+}
+
+static void reportLaunchFailure(int error_fd) {
+    char failure = 1;
+    (void)write(error_fd, &failure, sizeof(failure));
+}
+
+static void childExecute(const Command *command, ShellState *state, int input_fd, int output_fd, int **pipe_fds, size_t pipe_count, int *input_files, int input_count, int *output_files,
+                         int output_count, int error_fd, pid_t pgid, int background) {
+    setpgid(0, pgid);
+    if (input_count > 0) {
+        if (input_count == 1)
+            dup2(input_files[0], STDIN_FILENO);
+        else
+            dup2(input_fd, STDIN_FILENO);
+    } else if (input_fd != -1)
+        dup2(input_fd, STDIN_FILENO);
+    else if (background) {
+        int null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd != -1) {
+            dup2(null_fd, STDIN_FILENO);
+            close(null_fd);
         }
     }
 
-    if(has_slash)
-    {
-        execv(args[0], args);
+    if (output_count == 1)
+        dup2(output_files[0], STDOUT_FILENO);
+    else if (output_count > 1)
+        dup2(output_fd, STDOUT_FILENO);
+    else if (output_fd != -1)
+        dup2(output_fd, STDOUT_FILENO);
+
+    for (size_t i = 0; i < pipe_count; i++) {
+        close(pipe_fds[i][0]);
+        close(pipe_fds[i][1]);
     }
-    else if(path_only)
-    {
-        execvp(args[0], args);
-    }
-    else
-    {
-        char path[PATH_MAX];
-        int i = 0;
-        int j = 0;
+    closeFiles(input_files, input_count);
+    closeFiles(output_files, output_count);
+    if (input_fd != -1) close(input_fd);
+    if (output_fd != -1) close(output_fd);
 
-        path[i++] = '.';
-        path[i++] = '/';
-
-        while(args[0][j] != '\0')
-        {
-            path[i] = args[0][j];
-            i++;
-            j++;
-        }
-
-        path[i] = '\0';
-
-        if(access(path, X_OK) == 0)
-            execv(path, args);
-
-        execvp(args[0], args);
+    if (isBuiltin(command->argv[0])) {
+        runBuiltin(command, state);
+        close(error_fd);
+        exit(0);
     }
 
-    printf("cshell: command not found (%s)\n", original);
+    char *path = resolveCommand(command->argv[0]);
+    if (path == NULL) {
+        reportLaunchFailure(error_fd);
+        close(error_fd);
+        printf("cshell: command not found (%s)\n", command->argv[0]);
+        exit(1);
+    }
+    execve(path, command->argv, environ);
+    free(path);
+    reportLaunchFailure(error_fd);
+    close(error_fd);
+    printf("cshell: command not found (%s)\n", command->argv[0]);
     exit(1);
 }
 
-void copyFileToPipe(int fd, int pipe_write)
-{
-    char buffer[4096];
-    int bytes_read;
-    int bytes_written;
-    int result;
-
-    while(1)
-    {
-        bytes_read = read(fd, buffer, sizeof(buffer));
-
-        if(bytes_read <= 0)
-            break;
-
-        bytes_written = 0;
-
-        while(bytes_written < bytes_read)
-        {
-            result = write(pipe_write, buffer + bytes_written, bytes_read - bytes_written);
-
-            if(result <= 0)
-                return;
-
-            bytes_written += result;
-        }
+static int executePipeline(Pipeline *pipeline, ShellState *state) {
+    size_t count = pipeline->command_count;
+    size_t max_redirections = 1;
+    for (size_t i = 0; i < count; i++) {
+        if (pipeline->commands[i].redirection_count > max_redirections) max_redirections = pipeline->commands[i].redirection_count;
     }
-}
+    int **pipes = calloc(count > 0 ? count - 1 : 0, sizeof(int *));
+    pid_t *pids = calloc(count * 3 + 1, sizeof(pid_t));
+    pid_t *command_pids = calloc(count, sizeof(pid_t));
+    int (*error_pipes)[2] = calloc(count, sizeof(*error_pipes));
+    if (pids == NULL || command_pids == NULL || (count > 1 && pipes == NULL) || error_pipes == NULL) return EXECUTION_LAUNCH_FAILED;
 
-void copyPipeToFiles(int pipe_read, int *output_fds, int output_count)
-{
-    char buffer[4096];
-    int bytes_read;
+    sigset_t old_mask;
+    jobsBlockSignals(&old_mask);
 
-    while(1)
-    {
-        bytes_read = read(pipe_read, buffer, sizeof(buffer));
-
-        if(bytes_read <= 0)
-            break;
-
-        for(int i = 0; i < output_count; i++)
-        {
-            int bytes_written = 0;
-
-            while(bytes_written < bytes_read)
-            {
-                int result = write(output_fds[i], buffer + bytes_written, bytes_read - bytes_written);
-
-                if(result <= 0)
-                    return;
-
-                bytes_written += result;
-            }
-        }
+    for (size_t i = 0; i + 1 < count; i++) {
+        pipes[i] = malloc(sizeof(int) * 2);
+        if (pipes[i] == NULL || pipe(pipes[i]) == -1) return EXECUTION_LAUNCH_FAILED;
     }
-}
-
-void closeInputFiles(int *input_fds, int input_count)
-{
-    for(int i = 0; i < input_count; i++)
-        close(input_fds[i]);
-}
-
-void closeOutputFiles(int *output_fds, int output_count)
-{
-    for(int i = 0; i < output_count; i++)
-        close(output_fds[i]);
-}
-
-void executeCommand(Token *tokens, int token_count)
-{
-    int command_count = 1;
-
-    for(int i = 0; i < token_count; i++)
-    {
-        if(tokens[i].type == TOKEN_PIPE)
-            command_count++;
-        else if(tokens[i].type == TOKEN_SEMI || tokens[i].type == TOKEN_AMP)
-            break;
+    for (size_t i = 0; i < count; i++) {
+        if (pipe(error_pipes[i]) == -1) return EXECUTION_LAUNCH_FAILED;
+        int flags = fcntl(error_pipes[i][1], F_GETFD);
+        fcntl(error_pipes[i][1], F_SETFD, flags | FD_CLOEXEC);
     }
 
-    char *args[command_count][token_count + 1];
-
-    int input_fds[command_count][token_count];
-    int output_fds[command_count][token_count];
-
-    int input_count[command_count];
-    int output_count[command_count];
-    int argument_count[command_count];
-
-    int start_positions[command_count];
-    int end_positions[command_count];
-
-    int pipes[command_count][2];
-
-    int pid_count = 0;
-
-    int command_index = 0;
-    int start = 0;
-
-    for(int i = 0; i <= token_count; i++)
-    {
-        if(i == token_count || tokens[i].type == TOKEN_PIPE || tokens[i].type == TOKEN_SEMI || tokens[i].type == TOKEN_AMP)
-        {
-            start_positions[command_index] = start;
-            end_positions[command_index] = i;
-
-            if(i == token_count || tokens[i].type == TOKEN_SEMI || tokens[i].type == TOKEN_AMP)
-                break;
-
-            command_index++;
-            start = i + 1;
-        }
-    }
-
-    for(int command = 0; command < command_count; command++)
-    {
-        input_count[command] = 0;
-        output_count[command] = 0;
-        argument_count[command] = 0;
-
-        int i = start_positions[command];
-        int end = end_positions[command];
-
-        while(i < end)
-        {
-            if(tokens[i].type == TOKEN_LT)
-            {
-                i++;
-
-                if(i >= end || tokens[i].type != TOKEN_WORD)
-                {
-                    printf("cshell: invalid syntax\n");
-
-                    for(int j = 0; j < command_count; j++)
-                    {
-                        closeInputFiles(input_fds[j], input_count[j]);
-                        closeOutputFiles(output_fds[j], output_count[j]);
-                    }
-
-                    return;
+    int (*input_files)[max_redirections] = calloc(count, sizeof(*input_files));
+    int (*output_files)[max_redirections] = calloc(count, sizeof(*output_files));
+    int *input_counts = calloc(count, sizeof(int));
+    int *output_counts = calloc(count, sizeof(int));
+    int *input_streams = calloc(count, sizeof(int));
+    int *output_streams = calloc(count, sizeof(int));
+    if (input_files == NULL || output_files == NULL || input_counts == NULL || output_counts == NULL || input_streams == NULL || output_streams == NULL) return EXECUTION_LAUNCH_FAILED;
+    for (size_t i = 0; i < count; i++) {
+        input_streams[i] = -1;
+        output_streams[i] = -1;
+        input_counts[i] = 0;
+        output_counts[i] = 0;
+        for (size_t j = 0; j < pipeline->commands[i].redirection_count; j++) {
+            Redirection *r = &pipeline->commands[i].redirections[j];
+            int flags = r->type == REDIR_INPUT ? O_RDONLY : O_WRONLY | O_CREAT | (r->type == REDIR_OUTPUT ? O_TRUNC : O_APPEND);
+            int fd = open(r->filename, flags, 0644);
+            if (fd == -1) {
+                printf("cshell: %s\n", r->type == REDIR_INPUT ? "no such file or directory" : "unable to create file for writing");
+                for (size_t k = 0; k < count; k++) {
+                    closeFiles(input_files[k], input_counts[k]);
+                    closeFiles(output_files[k], output_counts[k]);
                 }
-
-                int fd = open(tokens[i].value, O_RDONLY);
-
-                if(fd == -1)
-                {
-                    printf("cshell: no such file or directory\n");
-
-                    for(int j = 0; j < command_count; j++)
-                    {
-                        closeInputFiles(input_fds[j], input_count[j]);
-                        closeOutputFiles(output_fds[j], output_count[j]);
-                    }
-
-                    return;
+                for (size_t k = 0; k + 1 < count; k++) {
+                    close(pipes[k][0]);
+                    close(pipes[k][1]);
                 }
-
-                input_fds[command][input_count[command]] = fd;
-                input_count[command]++;
-
-                i++;
+                for (size_t k = 0; k < count; k++) {
+                    close(error_pipes[k][0]);
+                    close(error_pipes[k][1]);
+                }
+                return EXECUTION_LAUNCH_FAILED;
             }
-            else if(tokens[i].type == TOKEN_GT)
-            {
-                i++;
-
-                if(i >= end || tokens[i].type != TOKEN_WORD)
-                {
-                    printf("cshell: invalid syntax\n");
-
-                    for(int j = 0; j < command_count; j++)
-                    {
-                        closeInputFiles(input_fds[j], input_count[j]);
-                        closeOutputFiles(output_fds[j], output_count[j]);
-                    }
-
-                    return;
-                }
-
-                int fd = open(tokens[i].value, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-
-                if(fd == -1)
-                {
-                    printf("cshell: unable to create file for writing\n");
-
-                    for(int j = 0; j < command_count; j++)
-                    {
-                        closeInputFiles(input_fds[j], input_count[j]);
-                        closeOutputFiles(output_fds[j], output_count[j]);
-                    }
-
-                    return;
-                }
-
-                output_fds[command][output_count[command]] = fd;
-                output_count[command]++;
-
-                i++;
-            }
-            else if(tokens[i].type == TOKEN_GTGT)
-            {
-                i++;
-
-                if(i >= end || tokens[i].type != TOKEN_WORD)
-                {
-                    printf("cshell: invalid syntax\n");
-
-                    for(int j = 0; j < command_count; j++)
-                    {
-                        closeInputFiles(input_fds[j], input_count[j]);
-                        closeOutputFiles(output_fds[j], output_count[j]);
-                    }
-
-                    return;
-                }
-
-                int fd = open(tokens[i].value, O_WRONLY | O_CREAT | O_APPEND, 0644);
-
-                if(fd == -1)
-                {
-                    printf("cshell: unable to create file for writing\n");
-
-                    for(int j = 0; j < command_count; j++)
-                    {
-                        closeInputFiles(input_fds[j], input_count[j]);
-                        closeOutputFiles(output_fds[j], output_count[j]);
-                    }
-
-                    return;
-                }
-
-                output_fds[command][output_count[command]] = fd;
-                output_count[command]++;
-
-                i++;
-            }
+            if (r->type == REDIR_INPUT)
+                input_files[i][input_counts[i]++] = fd;
             else
-            {
-                args[command][argument_count[command]] = tokens[i].value;
-                argument_count[command]++;
-                i++;
-            }
-        }
-
-        if(argument_count[command] == 0)
-        {
-            printf("cshell: invalid syntax\n");
-
-            for(int j = 0; j < command_count; j++)
-            {
-                closeInputFiles(input_fds[j], input_count[j]);
-                closeOutputFiles(output_fds[j], output_count[j]);
-            }
-
-            return;
-        }
-
-        args[command][argument_count[command]] = NULL;
-    }
-
-    for(int i = 0; i < command_count - 1; i++)
-    {
-        if(pipe(pipes[i]) != 0)
-        {
-            for(int j = 0; j < command_count; j++)
-            {
-                closeInputFiles(input_fds[j], input_count[j]);
-                closeOutputFiles(output_fds[j], output_count[j]);
-            }
-
-            return;
+                output_files[i][output_counts[i]++] = fd;
         }
     }
 
-    for(int command = 0; command < command_count; command++)
-    {
-        int input_pipe[2] = {-1, -1};
-        int output_pipe[2] = {-1, -1};
-
-        if(input_count[command] > 0)
-        {
-            if(pipe(input_pipe) != 0)
-                return;
-
-            int writer_pid = fork();
-
-            if(writer_pid == 0)
-            {
-                close(input_pipe[0]);
-
-                for(int j = 0; j < command_count; j++)
-                {
-                    if(j != command)
-                    {
-                        closeInputFiles(input_fds[j], input_count[j]);
-                        closeOutputFiles(output_fds[j], output_count[j]);
-                    }
-                }
-
-                for(int j = 0; j < command_count - 1; j++)
-                {
-                    close(pipes[j][0]);
-                    close(pipes[j][1]);
-                }
-
-                for(int j = 0; j < input_count[command]; j++)
-                {
-                    copyFileToPipe(input_fds[command][j], input_pipe[1]);
-                    close(input_fds[command][j]);
-                }
-
-                close(input_pipe[1]);
+    size_t pid_count = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (input_counts[i] > 1) {
+            int feeder[2];
+            pipe(feeder);
+            pid_t pid = fork();
+            if (pid == 0) {
+                close(feeder[0]);
+                copyFilesToPipe(input_files[i], (size_t)input_counts[i], feeder[1]);
+                close(feeder[1]);
                 exit(0);
             }
-
-            pid_count++;
+            pids[pid_count++] = pid;
+            close(feeder[1]);
+            input_streams[i] = feeder[0];
         }
-
-        if(output_count[command] > 0)
-        {
-            if(pipe(output_pipe) != 0)
-                return;
-
-            int reader_pid = fork();
-
-            if(reader_pid == 0)
-            {
-                close(output_pipe[1]);
-
-                for(int j = 0; j < command_count; j++)
-                {
-                    closeInputFiles(input_fds[j], input_count[j]);
-
-                    if(j != command)
-                        closeOutputFiles(output_fds[j], output_count[j]);
-                }
-
-                for(int j = 0; j < command_count - 1; j++)
-                {
-                    close(pipes[j][0]);
-                    close(pipes[j][1]);
-                }
-
-                copyPipeToFiles(output_pipe[0], output_fds[command], output_count[command]);
-
-                close(output_pipe[0]);
-                closeOutputFiles(output_fds[command], output_count[command]);
-
+        if (output_counts[i] > 1) {
+            int collector[2];
+            pipe(collector);
+            pid_t pid = fork();
+            if (pid == 0) {
+                close(collector[1]);
+                copyPipeToFiles(collector[0], output_files[i], (size_t)output_counts[i]);
+                close(collector[0]);
                 exit(0);
             }
-
-            pid_count++;
+            pids[pid_count++] = pid;
+            close(collector[0]);
+            output_streams[i] = collector[1];
         }
-
-        int command_pid = fork();
-
-        if(command_pid == 0)
-        {
-            if(input_count[command] > 0)
-            {
-                close(input_pipe[1]);
-
-                dup2(input_pipe[0], STDIN_FILENO);
-
-                close(input_pipe[0]);
-            }
-            else if(command > 0)
-            {
-                dup2(pipes[command - 1][0], STDIN_FILENO);
-            }
-
-            if(output_count[command] > 0)
-            {
-                close(output_pipe[0]);
-
-                dup2(output_pipe[1], STDOUT_FILENO);
-
-                close(output_pipe[1]);
-            }
-            else if(command < command_count - 1)
-            {
-                dup2(pipes[command][1], STDOUT_FILENO);
-            }
-
-            for(int j = 0; j < command_count - 1; j++)
-            {
-                close(pipes[j][0]);
-                close(pipes[j][1]);
-            }
-
-            if(input_pipe[0] != -1)
-                close(input_pipe[0]);
-
-            if(input_pipe[1] != -1)
-                close(input_pipe[1]);
-
-            if(output_pipe[0] != -1)
-                close(output_pipe[0]);
-
-            if(output_pipe[1] != -1)
-                close(output_pipe[1]);
-
-            for(int j = 0; j < command_count; j++)
-            {
-                closeInputFiles(input_fds[j], input_count[j]);
-                closeOutputFiles(output_fds[j], output_count[j]);
-            }
-
-            char *original = args[command][0];
-            int path_only = 0;
-
-            if(args[command][0][0] == '%')
-            {
-                path_only = 1;
-                args[command][0]++;
-            }
-
-            runCommand(args[command], argument_count[command], original, path_only);
-        }
-
-        pid_count++;
-
-        if(input_pipe[0] != -1)
-            close(input_pipe[0]);
-
-        if(input_pipe[1] != -1)
-            close(input_pipe[1]);
-
-        if(output_pipe[0] != -1)
-            close(output_pipe[0]);
-
-        if(output_pipe[1] != -1)
-            close(output_pipe[1]);
     }
 
-    for(int i = 0; i < command_count - 1; i++)
-    {
+    for (size_t i = 0; i < count; i++) {
+        int input = input_streams[i] != -1 ? input_streams[i] : (i > 0 ? pipes[i - 1][0] : -1);
+        int output = output_streams[i] != -1 ? output_streams[i] : (i + 1 < count ? pipes[i][1] : -1);
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(error_pipes[i][0]);
+            childExecute(&pipeline->commands[i], state, input, output, pipes, count - 1, input_files[i], input_counts[i], output_files[i], output_counts[i], error_pipes[i][1],
+                         i == 0 ? 0 : command_pids[0], pipeline->background);
+        }
+        if (i == 0) command_pids[0] = pid;
+        setpgid(pid, command_pids[0]);
+        close(error_pipes[i][1]);
+        command_pids[i] = pid;
+        pids[pid_count++] = pid;
+    }
+
+    for (size_t i = 0; i + 1 < count; i++) {
         close(pipes[i][0]);
         close(pipes[i][1]);
+        free(pipes[i]);
     }
-
-    for(int i = 0; i < command_count; i++)
-    {
-        closeInputFiles(input_fds[i], input_count[i]);
-        closeOutputFiles(output_fds[i], output_count[i]);
+    for (size_t i = 0; i < count; i++) {
+        if (input_streams[i] != -1) close(input_streams[i]);
+        if (output_streams[i] != -1) close(output_streams[i]);
+        closeFiles(input_files[i], input_counts[i]);
+        closeFiles(output_files[i], output_counts[i]);
     }
+    if (pipeline->background) {
+        int added = jobsAdd(command_pids[0], command_pids[0], command_pids, count, pipeline->commands[0].argv[0]);
+        for (size_t i = 0; i < count; i++) close(error_pipes[i][0]);
+        jobsRestoreSignals(&old_mask);
+        free(command_pids);
+        free(input_files);
+        free(output_files);
+        free(input_counts);
+        free(output_counts);
+        free(input_streams);
+        free(output_streams);
+        free(pids);
+        free(pipes);
+        free(error_pipes);
+        return added ? EXECUTION_OK : EXECUTION_LAUNCH_FAILED;
+    }
+    jobsSetForeground(1);
+    for (size_t i = 0; i < pid_count; i++) waitpid(pids[i], NULL, 0);
+    jobsSetForeground(0);
+    jobsRestoreSignals(&old_mask);
+    jobsProcessNotifications(0);
+    ExecutionResult result = EXECUTION_OK;
+    for (size_t i = 0; i < count; i++) {
+        char failure;
+        if (read(error_pipes[i][0], &failure, sizeof(failure)) > 0) result = EXECUTION_LAUNCH_FAILED;
+        close(error_pipes[i][0]);
+    }
+    free(input_files);
+    free(output_files);
+    free(input_counts);
+    free(output_counts);
+    free(input_streams);
+    free(output_streams);
+    free(pids);
+    free(command_pids);
+    free(pipes);
+    free(error_pipes);
+    return result;
+}
 
-    for(int i = 0; i < pid_count; i++)
-        wait(NULL);
+void executeLine(CommandLine *line, ShellState *state) {
+    for (size_t i = 0; i < line->pipeline_count; i++) {
+        Pipeline *pipeline = &line->pipelines[i];
+        Command *first = &pipeline->commands[0];
+        if (!pipeline->background && pipeline->command_count == 1 && first->redirection_count == 0 && isBuiltin(first->argv[0]))
+            runBuiltin(first, state);
+        else if (executePipeline(pipeline, state) == EXECUTION_LAUNCH_FAILED && pipeline->command_count == 1)
+            break;
+    }
 }

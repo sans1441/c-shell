@@ -1,19 +1,9 @@
 #ifndef LEXER_H
 #define LEXER_H
 
-typedef enum
-{
-    TOKEN_WORD,
-    TOKEN_PIPE,
-    TOKEN_SEMI,
-    TOKEN_AMP,
-    TOKEN_LT,
-    TOKEN_GT,
-    TOKEN_GTGT
-} TokenType;
+typedef enum { TOKEN_WORD, TOKEN_PIPE, TOKEN_SEMI, TOKEN_AMP, TOKEN_LT, TOKEN_GT, TOKEN_GTGT } TokenType;
 
-typedef struct
-{
+typedef struct {
     TokenType type;
     char *value;
 } Token;
