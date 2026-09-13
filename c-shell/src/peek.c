@@ -6,7 +6,7 @@
 
 void peekNormal(char *filename)
 {
-    FILE *file = fopen(filename, "r");
+    FILE *file = strcmp(filename, "-") == 0 ? stdin : fopen(filename, "r");
 
     if(file == NULL)
     {
@@ -19,12 +19,13 @@ void peekNormal(char *filename)
     while(fgets(line, sizeof(line), file) != NULL)
         printf("%s", line);
 
-    fclose(file);
+    if(file != stdin)
+        fclose(file);
 }
 
 void peekNormalNumbered(char *filename)
 {
-    FILE *file = fopen(filename, "r");
+    FILE *file = strcmp(filename, "-") == 0 ? stdin : fopen(filename, "r");
 
     if(file == NULL)
     {
@@ -44,12 +45,13 @@ void peekNormalNumbered(char *filename)
         }
     }
 
-    fclose(file);
+    if(file != stdin)
+        fclose(file);
 }
 
 void peekReverse(char *filename)
 {
-    FILE *file = fopen(filename, "r");
+    FILE *file = strcmp(filename, "-") == 0 ? stdin : fopen(filename, "r");
 
     if(file == NULL)
     {
@@ -90,12 +92,13 @@ void peekReverse(char *filename)
         free(lines[i]);
 
     free(lines);
-    fclose(file);
+    if(file != stdin)
+        fclose(file);
 }
 
 void peekReverseNumbered(char *filename)
 {
-    FILE *file = fopen(filename, "r");
+    FILE *file = strcmp(filename, "-") == 0 ? stdin : fopen(filename, "r");
 
     if(file == NULL)
     {
@@ -139,7 +142,8 @@ void peekReverseNumbered(char *filename)
         free(lines[i]);
 
     free(lines);
-    fclose(file);
+    if(file != stdin)
+        fclose(file);
 }
 
 void peek(Token *tokens, int token_count)

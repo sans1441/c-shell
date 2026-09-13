@@ -43,21 +43,14 @@ int main()
             continue;
         }
 
-        int valid = parser(tokens, token_count);
+        CommandLine *command_line = parser(tokens, token_count);
 
-        if(!valid)
+        if(command_line == NULL)
             printf("cshell: invalid syntax\n");
-        else if(token_count > 0 && strcmp(tokens[0].value, "hop") == 0)
-            hop(tokens, token_count, &state);
-        else if(token_count > 0 && strcmp(tokens[0].value, "locate") == 0)
-            locate(tokens, token_count);
-        else if(token_count > 0 && strcmp(tokens[0].value, "reveal") == 0)
-            reveal(tokens, token_count, &state);
-        else if(token_count > 0 && strcmp(tokens[0].value, "peek") == 0)
-            peek(tokens, token_count);
-        else if(token_count > 0)
-            executeCommand(tokens, token_count);
+        else
+            executeLine(command_line, &state);
 
+        freeCommandLine(command_line);
         freeTokens(tokens, token_count);
         free(line);
     }

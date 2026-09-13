@@ -2,6 +2,7 @@
 #define PARSER_H
 
 #include "lexer.h"
+#include "command.h"
 
 enum State
 {
@@ -12,6 +13,6 @@ enum State
     BG
 };
 
-int parser(Token *tokens, int token_count);
+CommandLine *parser(Token *tokens, int token_count);
 
 #endif

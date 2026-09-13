@@ -7,7 +7,7 @@ CFLAGS = -std=c23 \
          -Wno-unused-parameter \
          -fno-asm
 
-TARGET = shell
+TARGET = shell.out
 
 SRC = $(wildcard src/*.c)
 OBJ = $(SRC:.c=.o)
@@ -24,4 +24,3 @@ clean:
 	rm -f $(OBJ) $(TARGET)
 
 .PHONY: all clean
-

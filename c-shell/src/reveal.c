@@ -90,7 +90,7 @@ void revealDirectory(char *path, char *prefix, int show_hidden, int recursive)
 
         int directory = isDirectory(full_path);
 
-        if(directory)
+        if(directory && recursive)
             printf("%s/\n", display_name);
         else
             printf("%s\n", display_name);

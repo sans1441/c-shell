@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include "prompt.h"
 
-#define LINE_CAPACITY 256
+#define LINE_CAPACITY 1026
 
 char shell_home[PATH_MAX];
 
