@@ -7,11 +7,19 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+typedef enum { PROCESS_RUNNING, PROCESS_STOPPED, PROCESS_COMPLETED } ProcessState;
+
+typedef struct {
+    pid_t pid;
+    char *command_name;
+    ProcessState state;
+} Process;
+
 typedef struct Job {
     int number;
     pid_t pgid;
     pid_t first_pid;
-    pid_t *pids;
+    Process *processes;
     size_t process_count;
     size_t remaining;
     char *command_name;
@@ -37,7 +45,7 @@ static void childHandler(int signal_number) {
     ChildEvent event;
     pid_t pid;
 
-    while ((pid = waitpid(-1, &event.status, WNOHANG)) > 0) {
+    while ((pid = waitpid(-1, &event.status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
         event.pid = pid;
         (void)write(notification_pipe[1], &event, sizeof(event));
     }
@@ -70,69 +78,88 @@ void jobsBlockSignals(sigset_t *old_mask) {
 
 void jobsRestoreSignals(const sigset_t *old_mask) { sigprocmask(SIG_SETMASK, old_mask, NULL); }
 
-int jobsAdd(pid_t pgid, pid_t first_pid, const pid_t *pids, size_t process_count, const char *command_name) {
+int jobsAdd(pid_t pgid, pid_t first_pid, const pid_t *pids, const char *const *command_names, size_t process_count) {
     Job *job = calloc(1, sizeof(Job));
     if (job == NULL) return 0;
 
-    job->pids = malloc(sizeof(pid_t) * process_count);
-    job->command_name = strdup(command_name);
-    if (job->pids == NULL || job->command_name == NULL) {
-        free(job->pids);
+    job->processes = calloc(process_count, sizeof(Process));
+    job->command_name = strdup(command_names[0]);
+    if (job->processes == NULL || job->command_name == NULL) {
+        free(job->processes);
         free(job->command_name);
         free(job);
         return 0;
     }
 
-    memcpy(job->pids, pids, sizeof(pid_t) * process_count);
+    for (size_t i = 0; i < process_count; i++) {
+        job->processes[i].pid = pids[i];
+        job->processes[i].command_name = strdup(command_names[i]);
+        job->processes[i].state = PROCESS_RUNNING;
+        if (job->processes[i].command_name == NULL) {
+            for (size_t j = 0; j <= i; j++) free(job->processes[j].command_name);
+            free(job->processes);
+            free(job->command_name);
+            free(job);
+            return 0;
+        }
+    }
+
     job->number = next_job_number++;
     job->pgid = pgid;
     job->first_pid = first_pid;
     job->process_count = process_count;
     job->remaining = process_count;
-    job->next = job_list;
-    job_list = job;
+
+    if (job_list == NULL)
+        job_list = job;
+    else {
+        Job *last = job_list;
+        while (last->next != NULL) last = last->next;
+        last->next = job;
+    }
 
     printf("[%d] %d\n", job->number, (int)job->first_pid);
     fflush(stdout);
     return 1;
 }
 
-static Job *findJob(pid_t pid, Job **previous) {
-    Job *before = NULL;
+static Job *findJob(pid_t pid, Process **process) {
     for (Job *job = job_list; job != NULL; job = job->next) {
         for (size_t i = 0; i < job->process_count; i++) {
-            if (job->pids[i] == pid) {
-                if (previous != NULL) *previous = before;
+            if (job->processes[i].pid == pid) {
+                if (process != NULL) *process = &job->processes[i];
                 return job;
             }
         }
-        before = job;
     }
     return NULL;
 }
 
 void jobsSetForeground(int active) { foreground_active = active; }
 
-void jobsProcessNotifications(int redraw_prompt) {
-    ChildEvent event;
-    ssize_t bytes;
-    while ((bytes = read(notification_pipe[0], &event, sizeof(event))) == (ssize_t)sizeof(event)) {
-        Job *job = findJob(event.pid, NULL);
-        if (job == NULL) continue;
-
-        if (event.pid == job->first_pid) job->first_status = event.status;
-        job->remaining--;
-        if (job->remaining != 0) continue;
-
-        job->completed = 1;
+static void removeJob(Job *target) {
+    Job *previous = NULL;
+    Job *job = job_list;
+    while (job != NULL && job != target) {
+        previous = job;
+        job = job->next;
     }
+    if (job == NULL) return;
 
-    if (bytes == -1 && errno != EAGAIN && errno != EINTR) return;
+    if (previous == NULL)
+        job_list = job->next;
+    else
+        previous->next = job->next;
+    for (size_t i = 0; i < job->process_count; i++) free(job->processes[i].command_name);
+    free(job->processes);
+    free(job->command_name);
+    free(job);
+}
 
+static void printCompletedJobs(int redraw_prompt) {
     if (foreground_active) return;
 
     int printed = 0;
-    Job *previous = NULL;
     Job *job = job_list;
     while (job != NULL) {
         Job *next = job->next;
@@ -143,18 +170,53 @@ void jobsProcessNotifications(int redraw_prompt) {
             else if (WIFSIGNALED(job->first_status))
                 printf("%s with pid %d exited abnormally\n", job->command_name, (int)job->first_pid);
             printed = 1;
-
-            if (previous == NULL)
-                job_list = next;
-            else
-                previous->next = next;
-            free(job->pids);
-            free(job->command_name);
-            free(job);
-        } else
-            previous = job;
+            removeJob(job);
+        }
         job = next;
     }
-
     if (printed && redraw_prompt && prompt_callback != NULL) prompt_callback();
+}
+
+void jobsProcessNotifications(int redraw_prompt) {
+    ChildEvent event;
+    ssize_t bytes;
+    while ((bytes = read(notification_pipe[0], &event, sizeof(event))) == (ssize_t)sizeof(event)) {
+        Process *process = NULL;
+        Job *job = findJob(event.pid, &process);
+        if (job == NULL || process == NULL) continue;
+
+        if (WIFSTOPPED(event.status)) {
+            process->state = PROCESS_STOPPED;
+        } else if (WIFCONTINUED(event.status)) {
+            process->state = PROCESS_RUNNING;
+        } else if ((WIFEXITED(event.status) || WIFSIGNALED(event.status)) && process->state != PROCESS_COMPLETED) {
+            process->state = PROCESS_COMPLETED;
+            if (event.pid == job->first_pid) job->first_status = event.status;
+            job->remaining--;
+            if (job->remaining == 0) job->completed = 1;
+        }
+    }
+
+    if (bytes == -1 && errno != EAGAIN && errno != EINTR) return;
+    printCompletedJobs(redraw_prompt);
+}
+
+void jobsPrintActivities(void) {
+    jobsProcessNotifications(0);
+    for (Job *job = job_list; job != NULL; job = job->next) {
+        int active = 0;
+        for (size_t i = 0; i < job->process_count; i++) {
+            if (job->processes[i].state != PROCESS_COMPLETED) active = 1;
+        }
+        if (!active) continue;
+
+        printf("[%d] pgid %d\n", job->number, (int)job->pgid);
+        for (size_t i = 0; i < job->process_count; i++) {
+            Process *process = &job->processes[i];
+            if (process->state == PROCESS_COMPLETED) continue;
+            const char *state = process->state == PROCESS_STOPPED ? "Stopped" : "Running";
+            printf("  %d %s %s\n", (int)process->pid, process->command_name, state);
+        }
+    }
+    fflush(stdout);
 }

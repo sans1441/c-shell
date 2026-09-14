@@ -14,7 +14,7 @@
 
 extern char **environ;
 
-static int isBuiltin(const char *name) { return strcmp(name, "hop") == 0 || strcmp(name, "reveal") == 0 || strcmp(name, "peek") == 0 || strcmp(name, "locate") == 0; }
+static int isBuiltin(const char *name) { return strcmp(name, "hop") == 0 || strcmp(name, "reveal") == 0 || strcmp(name, "peek") == 0 || strcmp(name, "locate") == 0 || strcmp(name, "activities") == 0; }
 
 static int runBuiltin(const Command *command, ShellState *state) {
     Token *tokens = calloc(command->argc, sizeof(Token));
@@ -33,6 +33,12 @@ static int runBuiltin(const Command *command, ShellState *state) {
         peek(tokens, (int)command->argc);
     else if (strcmp(command->argv[0], "locate") == 0)
         locate(tokens, (int)command->argc);
+    else if (strcmp(command->argv[0], "activities") == 0) {
+        if (command->argc != 1)
+            printf("activities: invalid syntax\n");
+        else
+            jobsPrintActivities();
+    }
 
     free(tokens);
     return 0;
@@ -184,8 +190,9 @@ static int executePipeline(Pipeline *pipeline, ShellState *state) {
     int **pipes = calloc(count > 0 ? count - 1 : 0, sizeof(int *));
     pid_t *pids = calloc(count * 3 + 1, sizeof(pid_t));
     pid_t *command_pids = calloc(count, sizeof(pid_t));
+    const char **command_names = calloc(count, sizeof(char *));
     int (*error_pipes)[2] = calloc(count, sizeof(*error_pipes));
-    if (pids == NULL || command_pids == NULL || (count > 1 && pipes == NULL) || error_pipes == NULL) return EXECUTION_LAUNCH_FAILED;
+    if (pids == NULL || command_pids == NULL || command_names == NULL || (count > 1 && pipes == NULL) || error_pipes == NULL) return EXECUTION_LAUNCH_FAILED;
 
     sigset_t old_mask;
     jobsBlockSignals(&old_mask);
@@ -241,6 +248,7 @@ static int executePipeline(Pipeline *pipeline, ShellState *state) {
 
     size_t pid_count = 0;
     for (size_t i = 0; i < count; i++) {
+        command_names[i] = pipeline->commands[i].argv[0];
         if (input_counts[i] > 1) {
             int feeder[2];
             pipe(feeder);
@@ -299,10 +307,11 @@ static int executePipeline(Pipeline *pipeline, ShellState *state) {
         closeFiles(output_files[i], output_counts[i]);
     }
     if (pipeline->background) {
-        int added = jobsAdd(command_pids[0], command_pids[0], command_pids, count, pipeline->commands[0].argv[0]);
+        int added = jobsAdd(command_pids[0], command_pids[0], command_pids, command_names, count);
         for (size_t i = 0; i < count; i++) close(error_pipes[i][0]);
         jobsRestoreSignals(&old_mask);
         free(command_pids);
+        free(command_names);
         free(input_files);
         free(output_files);
         free(input_counts);
@@ -333,6 +342,7 @@ static int executePipeline(Pipeline *pipeline, ShellState *state) {
     free(output_streams);
     free(pids);
     free(command_pids);
+    free(command_names);
     free(pipes);
     free(error_pipes);
     return result;
@@ -342,7 +352,7 @@ void executeLine(CommandLine *line, ShellState *state) {
     for (size_t i = 0; i < line->pipeline_count; i++) {
         Pipeline *pipeline = &line->pipelines[i];
         Command *first = &pipeline->commands[0];
-        if (!pipeline->background && pipeline->command_count == 1 && first->redirection_count == 0 && isBuiltin(first->argv[0]))
+    if (!pipeline->background && pipeline->command_count == 1 && first->redirection_count == 0 && isBuiltin(first->argv[0]))
             runBuiltin(first, state);
         else if (executePipeline(pipeline, state) == EXECUTION_LAUNCH_FAILED && pipeline->command_count == 1)
             break;
