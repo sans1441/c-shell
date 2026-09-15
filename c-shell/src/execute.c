@@ -4,6 +4,10 @@
 #include "locate.h"
 #include "peek.h"
 #include "reveal.h"
+#include "activities.h"
+#include "ping.h"
+#include "resume.h"
+#include "terminal.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +18,7 @@
 
 extern char **environ;
 
-static int isBuiltin(const char *name) { return strcmp(name, "hop") == 0 || strcmp(name, "reveal") == 0 || strcmp(name, "peek") == 0 || strcmp(name, "locate") == 0 || strcmp(name, "activities") == 0; }
+static int isBuiltin(const char *name) { return strcmp(name, "hop") == 0 || strcmp(name, "reveal") == 0 || strcmp(name, "peek") == 0 || strcmp(name, "locate") == 0 || strcmp(name, "activities") == 0 || strcmp(name, "resume") == 0 || strcmp(name, "ping") == 0; }
 
 static char *describePipeline(const Pipeline *pipeline) {
     size_t length = 1;
@@ -51,12 +55,12 @@ static int runBuiltin(const Command *command, ShellState *state) {
         peek(tokens, (int)command->argc);
     else if (strcmp(command->argv[0], "locate") == 0)
         locate(tokens, (int)command->argc);
-    else if (strcmp(command->argv[0], "activities") == 0) {
-        if (command->argc != 1)
-            printf("activities: invalid syntax\n");
-        else
-            jobsPrintActivities();
-    }
+    else if (strcmp(command->argv[0], "activities") == 0)
+        activitiesRun(command);
+    else if (strcmp(command->argv[0], "resume") == 0)
+        resumeRun(command);
+    else if (strcmp(command->argv[0], "ping") == 0)
+        pingRun(command);
 
     free(tokens);
     return 0;
@@ -146,7 +150,7 @@ static void reportLaunchFailure(int error_fd) {
 
 static void childExecute(const Command *command, ShellState *state, int input_fd, int output_fd, int **pipe_fds, size_t pipe_count, int *input_files, int input_count, int *output_files,
                          int output_count, int error_fd, pid_t pgid, int background) {
-    jobsPrepareChild();
+    terminalPrepareChild();
     setpgid(0, pgid);
     if (input_count > 0) {
         if (input_count == 1)
@@ -327,7 +331,9 @@ static int executePipeline(Pipeline *pipeline, ShellState *state) {
         closeFiles(output_files[i], output_counts[i]);
     }
     if (pipeline->background) {
-        int added = jobsAdd(command_pids[0], command_pids[0], command_pids, command_names, count);
+        char *description = describePipeline(pipeline);
+        int added = description != NULL && jobsAdd(command_pids[0], command_pids[0], command_pids, command_names, count, description);
+        free(description);
         for (size_t i = 0; i < count; i++) close(error_pipes[i][0]);
         jobsRestoreSignals(&old_mask);
         free(command_pids);
@@ -344,7 +350,7 @@ static int executePipeline(Pipeline *pipeline, ShellState *state) {
         return added ? EXECUTION_OK : EXECUTION_LAUNCH_FAILED;
     }
     jobsSetForeground(1);
-    jobsGiveTerminal(command_pids[0]);
+    terminalGiveTo(command_pids[0]);
     int stopped = 0;
     int *command_statuses = calloc(count, sizeof(int));
     for (size_t i = 0; i < count; i++) {
@@ -354,7 +360,7 @@ static int executePipeline(Pipeline *pipeline, ShellState *state) {
     if (!stopped) {
         for (size_t i = 0; i < command_start; i++) waitpid(pids[i], NULL, 0);
     }
-    jobsReclaimTerminal();
+    terminalReclaim();
     jobsSetForeground(0);
     jobsRestoreSignals(&old_mask);
     if (stopped) {
