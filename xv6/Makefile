@@ -76,6 +76,12 @@ CFLAGS += -fno-builtin-printf -fno-builtin-fprintf -fno-builtin-vprintf
 CFLAGS += -I.
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 
+ifeq ($(SCHEDULER),MLFQ)
+CFLAGS += -DSCHEDULER_MLFQ
+else ifneq ($(SCHEDULER),)
+$(error Unsupported scheduler: $(SCHEDULER))
+endif
+
 # Disable PIE when possible (for Ubuntu 16.10 toolchain)
 ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]no-pie'),)
 CFLAGS += -fno-pie -no-pie
