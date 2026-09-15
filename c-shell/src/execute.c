@@ -7,6 +7,7 @@
 #include "activities.h"
 #include "ping.h"
 #include "resume.h"
+#include "spy.h"
 #include "terminal.h"
 #include <fcntl.h>
 #include <stdio.h>
@@ -18,7 +19,7 @@
 
 extern char **environ;
 
-static int isBuiltin(const char *name) { return strcmp(name, "hop") == 0 || strcmp(name, "reveal") == 0 || strcmp(name, "peek") == 0 || strcmp(name, "locate") == 0 || strcmp(name, "activities") == 0 || strcmp(name, "resume") == 0 || strcmp(name, "ping") == 0; }
+static int isBuiltin(const char *name) { return strcmp(name, "hop") == 0 || strcmp(name, "reveal") == 0 || strcmp(name, "peek") == 0 || strcmp(name, "locate") == 0 || strcmp(name, "activities") == 0 || strcmp(name, "resume") == 0 || strcmp(name, "ping") == 0 || strcmp(name, "spy") == 0; }
 
 static char *describePipeline(const Pipeline *pipeline) {
     size_t length = 1;
@@ -61,6 +62,8 @@ static int runBuiltin(const Command *command, ShellState *state) {
         resumeRun(command);
     else if (strcmp(command->argv[0], "ping") == 0)
         pingRun(command);
+    else if (strcmp(command->argv[0], "spy") == 0)
+        spyRun(command);
 
     free(tokens);
     return 0;
