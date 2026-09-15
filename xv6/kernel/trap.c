@@ -16,6 +16,33 @@ void kernelvec();
 
 extern int devintr();
 
+#ifdef SCHEDULER_MLFQ
+static int
+mlfqTimeSlice(int queue)
+{
+  if (queue == 0)
+    return 1;
+  if (queue == 1)
+    return 4;
+  if (queue == 2)
+    return 8;
+  return 16;
+}
+
+static void
+mlfqTimerTick(struct proc *p)
+{
+  p->mlfq_slice_ticks++;
+
+  if (p->mlfq_slice_ticks >= mlfqTimeSlice(p->mlfq_queue)) {
+    if (p->mlfq_queue < 3)
+      p->mlfq_queue++;
+
+    p->mlfq_slice_ticks = 0;
+  }
+}
+#endif
+
 void
 trapinit(void)
 {
@@ -81,9 +108,13 @@ usertrap(void)
   if (killed(p))
     kexit(-1);
 
-  // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2)
+  // Give up the CPU if this is a timer interrupt.
+  if (which_dev == 2) {
+#ifdef SCHEDULER_MLFQ
+    mlfqTimerTick(p);
+#endif
     yield();
+  }
 
   prepare_return();
 
@@ -153,9 +184,13 @@ kerneltrap()
     panic("kerneltrap");
   }
 
-  // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2 && myproc() != 0)
+  // Give up the CPU if this is a timer interrupt.
+  if (which_dev == 2 && myproc() != 0) {
+#ifdef SCHEDULER_MLFQ
+    mlfqTimerTick(myproc());
+#endif
     yield();
+  }
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
