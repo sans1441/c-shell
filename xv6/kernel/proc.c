@@ -26,6 +26,10 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+#ifdef SCHEDULER_MLFQ
+static int mlfq_next[NCPU][4];
+#endif
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -459,10 +463,18 @@ scheduler(void)
 
 #ifdef SCHEDULER_MLFQ
     // Always search the highest-priority queue first.
+    int cpu_id = cpuid();
     for (int queue = 0; queue < 4 && found == 0; queue++) {
-      for (p = proc; p < &proc[NPROC]; p++) {
+      int start = mlfq_next[cpu_id][queue];
+
+      for (int offset = 0; offset < NPROC; offset++) {
+        int index = (start + offset) % NPROC;
+        p = &proc[index];
         acquire(&p->lock);
         if (p->state == RUNNABLE && p->mlfq_queue == queue) {
+          // Start after this process the next time this queue is searched.
+          mlfq_next[cpu_id][queue] = (index + 1) % NPROC;
+
           // Switch to chosen process.  It is the process's job
           // to release its lock and then reacquire it
           // before jumping back to us.

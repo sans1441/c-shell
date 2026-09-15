@@ -15,6 +15,7 @@ extern char trampoline[], uservec[];
 void kernelvec();
 
 extern int devintr();
+extern struct proc proc[NPROC];
 
 #ifdef SCHEDULER_MLFQ
 static int
