@@ -456,6 +456,34 @@ scheduler(void)
     intr_off();
 
     int found = 0;
+
+#ifdef SCHEDULER_MLFQ
+    // Always search the highest-priority queue first.
+    for (int queue = 0; queue < 4 && found == 0; queue++) {
+      for (p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if (p->state == RUNNABLE && p->mlfq_queue == queue) {
+          // Switch to chosen process.  It is the process's job
+          // to release its lock and then reacquire it
+          // before jumping back to us.
+          p->state = RUNNING;
+          c->proc = p;
+          swtch(&c->context, &p->context);
+
+          // Don't re-enable interrupts on release.
+          mycpu()->intena = 0;
+
+          // Process is done running for now.
+          // It should have changed its p->state before coming back.
+          c->proc = 0;
+          found = 1;
+        }
+        release(&p->lock);
+        if (found)
+          break;
+      }
+    }
+#else
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if (p->state == RUNNABLE) {
@@ -476,6 +504,7 @@ scheduler(void)
       }
       release(&p->lock);
     }
+#endif
     if (found == 0) {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
