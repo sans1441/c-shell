@@ -41,6 +41,22 @@ mlfqTimerTick(struct proc *p)
     p->mlfq_slice_ticks = 0;
   }
 }
+
+static void
+mlfqBoostAll(uint64 boost_tick)
+{
+  struct proc *p;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED && p->state != ZOMBIE) {
+      p->mlfq_queue = 0;
+      p->mlfq_slice_ticks = 0;
+      p->mlfq_last_boost = boost_tick;
+    }
+    release(&p->lock);
+  }
+}
 #endif
 
 void
@@ -201,12 +217,25 @@ kerneltrap()
 void
 clockintr()
 {
+#ifdef SCHEDULER_MLFQ
+  int should_boost = 0;
+#endif
+
   if (cpuid() == 0) {
     acquire(&tickslock);
     ticks++;
+#ifdef SCHEDULER_MLFQ
+    if (ticks % 48 == 0)
+      should_boost = 1;
+#endif
     wakeup(&ticks);
     release(&tickslock);
   }
+
+#ifdef SCHEDULER_MLFQ
+  if (should_boost)
+    mlfqBoostAll(ticks);
+#endif
 
   // ask for the next timer interrupt. this also clears
   // the interrupt request. 1000000 is about a tenth
