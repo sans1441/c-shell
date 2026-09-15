@@ -124,6 +124,12 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+// allocate mlfq parameters on initialisation
+#ifdef SCHEDULER_MLFQ
+  p->mlfq_queue = 0;
+  p->mlfq_slice_ticks = 0;
+  p->mlfq_last_boost = 0;
+#endif
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -167,6 +173,14 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  
+// free mlfq parameters upon termination
+#ifdef SCHEDULER_MLFQ
+  p->mlfq_queue = 0;
+  p->mlfq_slice_ticks = 0;
+  p->mlfq_last_boost = 0;
+#endif
+
   p->state = UNUSED;
 }
 
