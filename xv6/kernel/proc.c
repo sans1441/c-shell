@@ -750,7 +750,17 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
+#ifdef SCHEDULER_MLFQ
+    printk("%d %s %s queue=%d slice=%d last_boost=%ld",
+           p->pid,
+           state,
+           p->name,
+           p->mlfq_queue,
+           p->mlfq_slice_ticks,
+           (long)p->mlfq_last_boost);
+#else
     printk("%d %s %s", p->pid, state, p->name);
+#endif
     printk("\n");
   }
 }
