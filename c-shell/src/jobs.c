@@ -23,6 +23,7 @@ typedef struct Job {
     size_t process_count;
     size_t remaining;
     char *command_name;
+    char *command_line;
     int completed;
     int first_status;
     struct Job *next;
@@ -38,6 +39,9 @@ static int next_job_number = 1;
 static int notification_pipe[2] = {-1, -1};
 static int foreground_active;
 static void (*prompt_callback)(void);
+static pid_t shell_pgid;
+static int interactive_terminal;
+static volatile sig_atomic_t interactive_signal;
 
 static void childHandler(int signal_number) {
     (void)signal_number;
@@ -52,7 +56,19 @@ static void childHandler(int signal_number) {
     errno = saved_errno;
 }
 
+static void interactiveSignalHandler(int signal_number) {
+    interactive_signal = signal_number;
+    (void)write(STDOUT_FILENO, "\n", 1);
+}
+
 void jobsInit(void) {
+    interactive_terminal = isatty(STDIN_FILENO);
+    shell_pgid = getpid();
+    if (interactive_terminal) {
+        signal(SIGTTOU, SIG_IGN);
+        setpgid(shell_pgid, shell_pgid);
+        tcsetpgrp(STDIN_FILENO, shell_pgid);
+    }
     if (pipe(notification_pipe) == -1) return;
 
     int flags = fcntl(notification_pipe[0], F_GETFL);
@@ -63,11 +79,23 @@ void jobsInit(void) {
     sigemptyset(&action.sa_mask);
     action.sa_flags = SA_RESTART;
     sigaction(SIGCHLD, &action, NULL);
+
+    struct sigaction interactive_action = {0};
+    interactive_action.sa_handler = interactiveSignalHandler;
+    sigemptyset(&interactive_action.sa_mask);
+    sigaction(SIGINT, &interactive_action, NULL);
+    sigaction(SIGTSTP, &interactive_action, NULL);
 }
 
 void jobsSetPromptCallback(void (*callback)(void)) { prompt_callback = callback; }
 
 int jobsNotificationFd(void) { return notification_pipe[0]; }
+
+int jobsTakeInteractiveSignal(void) {
+    int signal_number = interactive_signal;
+    interactive_signal = 0;
+    return signal_number;
+}
 
 void jobsBlockSignals(sigset_t *old_mask) {
     sigset_t blocked;
@@ -78,15 +106,17 @@ void jobsBlockSignals(sigset_t *old_mask) {
 
 void jobsRestoreSignals(const sigset_t *old_mask) { sigprocmask(SIG_SETMASK, old_mask, NULL); }
 
-int jobsAdd(pid_t pgid, pid_t first_pid, const pid_t *pids, const char *const *command_names, size_t process_count) {
+static int addJob(pid_t pgid, pid_t first_pid, const pid_t *pids, const char *const *command_names, size_t process_count, ProcessState initial_state, int announce_stopped, const char *command_line) {
     Job *job = calloc(1, sizeof(Job));
     if (job == NULL) return 0;
 
     job->processes = calloc(process_count, sizeof(Process));
     job->command_name = strdup(command_names[0]);
-    if (job->processes == NULL || job->command_name == NULL) {
+    job->command_line = strdup(command_line);
+    if (job->processes == NULL || job->command_name == NULL || job->command_line == NULL) {
         free(job->processes);
         free(job->command_name);
+        free(job->command_line);
         free(job);
         return 0;
     }
@@ -94,11 +124,12 @@ int jobsAdd(pid_t pgid, pid_t first_pid, const pid_t *pids, const char *const *c
     for (size_t i = 0; i < process_count; i++) {
         job->processes[i].pid = pids[i];
         job->processes[i].command_name = strdup(command_names[i]);
-        job->processes[i].state = PROCESS_RUNNING;
+        job->processes[i].state = initial_state;
         if (job->processes[i].command_name == NULL) {
             for (size_t j = 0; j <= i; j++) free(job->processes[j].command_name);
             free(job->processes);
             free(job->command_name);
+            free(job->command_line);
             free(job);
             return 0;
         }
@@ -118,9 +149,20 @@ int jobsAdd(pid_t pgid, pid_t first_pid, const pid_t *pids, const char *const *c
         last->next = job;
     }
 
-    printf("[%d] %d\n", job->number, (int)job->first_pid);
+    if (announce_stopped)
+        printf("[%d] + Stopped %s\n", job->number, job->command_line);
+    else
+        printf("[%d] %d\n", job->number, (int)job->first_pid);
     fflush(stdout);
     return 1;
+}
+
+int jobsAdd(pid_t pgid, pid_t first_pid, const pid_t *pids, const char *const *command_names, size_t process_count) {
+    return addJob(pgid, first_pid, pids, command_names, process_count, PROCESS_RUNNING, 0, command_names[0]);
+}
+
+int jobsAddStopped(pid_t pgid, pid_t first_pid, const pid_t *pids, const char *const *command_names, size_t process_count, const char *command_line) {
+    return addJob(pgid, first_pid, pids, command_names, process_count, PROCESS_STOPPED, 1, command_line);
 }
 
 static Job *findJob(pid_t pid, Process **process) {
@@ -136,6 +178,34 @@ static Job *findJob(pid_t pid, Process **process) {
 }
 
 void jobsSetForeground(int active) { foreground_active = active; }
+
+void jobsGiveTerminal(pid_t pgid) {
+    if (interactive_terminal) tcsetpgrp(STDIN_FILENO, pgid);
+}
+
+void jobsReclaimTerminal(void) {
+    if (interactive_terminal) tcsetpgrp(STDIN_FILENO, shell_pgid);
+}
+
+void jobsPrepareChild(void) {
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
+    signal(SIGTTOU, SIG_DFL);
+    signal(SIGCHLD, SIG_DFL);
+}
+
+int jobsHasStopped(void) {
+    for (Job *job = job_list; job != NULL; job = job->next) {
+        for (size_t i = 0; i < job->process_count; i++) {
+            if (job->processes[i].state == PROCESS_STOPPED) return 1;
+        }
+    }
+    return 0;
+}
+
+void jobsTerminateAll(void) {
+    for (Job *job = job_list; job != NULL; job = job->next) kill(-job->pgid, SIGHUP);
+}
 
 static void removeJob(Job *target) {
     Job *previous = NULL;
@@ -153,6 +223,7 @@ static void removeJob(Job *target) {
     for (size_t i = 0; i < job->process_count; i++) free(job->processes[i].command_name);
     free(job->processes);
     free(job->command_name);
+    free(job->command_line);
     free(job);
 }
 

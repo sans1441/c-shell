@@ -16,6 +16,24 @@ extern char **environ;
 
 static int isBuiltin(const char *name) { return strcmp(name, "hop") == 0 || strcmp(name, "reveal") == 0 || strcmp(name, "peek") == 0 || strcmp(name, "locate") == 0 || strcmp(name, "activities") == 0; }
 
+static char *describePipeline(const Pipeline *pipeline) {
+    size_t length = 1;
+    for (size_t i = 0; i < pipeline->command_count; i++) {
+        if (i > 0) length += 3;
+        for (size_t j = 0; j < pipeline->commands[i].argc; j++) length += strlen(pipeline->commands[i].argv[j]) + 1;
+    }
+    char *description = calloc(length, sizeof(char));
+    if (description == NULL) return NULL;
+    for (size_t i = 0; i < pipeline->command_count; i++) {
+        if (i > 0) strcat(description, " | ");
+        for (size_t j = 0; j < pipeline->commands[i].argc; j++) {
+            if (j > 0) strcat(description, " ");
+            strcat(description, pipeline->commands[i].argv[j]);
+        }
+    }
+    return description;
+}
+
 static int runBuiltin(const Command *command, ShellState *state) {
     Token *tokens = calloc(command->argc, sizeof(Token));
     if (tokens == NULL) return 1;
@@ -128,6 +146,7 @@ static void reportLaunchFailure(int error_fd) {
 
 static void childExecute(const Command *command, ShellState *state, int input_fd, int output_fd, int **pipe_fds, size_t pipe_count, int *input_files, int input_count, int *output_files,
                          int output_count, int error_fd, pid_t pgid, int background) {
+    jobsPrepareChild();
     setpgid(0, pgid);
     if (input_count > 0) {
         if (input_count == 1)
@@ -279,6 +298,7 @@ static int executePipeline(Pipeline *pipeline, ShellState *state) {
         }
     }
 
+    size_t command_start = pid_count;
     for (size_t i = 0; i < count; i++) {
         int input = input_streams[i] != -1 ? input_streams[i] : (i > 0 ? pipes[i - 1][0] : -1);
         int output = output_streams[i] != -1 ? output_streams[i] : (i + 1 < count ? pipes[i][1] : -1);
@@ -324,9 +344,48 @@ static int executePipeline(Pipeline *pipeline, ShellState *state) {
         return added ? EXECUTION_OK : EXECUTION_LAUNCH_FAILED;
     }
     jobsSetForeground(1);
-    for (size_t i = 0; i < pid_count; i++) waitpid(pids[i], NULL, 0);
+    jobsGiveTerminal(command_pids[0]);
+    int stopped = 0;
+    int *command_statuses = calloc(count, sizeof(int));
+    for (size_t i = 0; i < count; i++) {
+        waitpid(command_pids[i], &command_statuses[i], WUNTRACED);
+        if (WIFSTOPPED(command_statuses[i])) stopped = 1;
+    }
+    if (!stopped) {
+        for (size_t i = 0; i < command_start; i++) waitpid(pids[i], NULL, 0);
+    }
+    jobsReclaimTerminal();
     jobsSetForeground(0);
     jobsRestoreSignals(&old_mask);
+    if (stopped) {
+        printf("\n");
+        char *description = describePipeline(pipeline);
+        if (description != NULL) {
+            jobsAddStopped(command_pids[0], command_pids[0], command_pids, command_names, count, description);
+            free(description);
+        }
+        for (size_t i = 0; i < count; i++) close(error_pipes[i][0]);
+        free(command_statuses);
+        free(input_files);
+        free(output_files);
+        free(input_counts);
+        free(output_counts);
+        free(input_streams);
+        free(output_streams);
+        free(pids);
+        free(command_pids);
+        free(command_names);
+        free(pipes);
+        free(error_pipes);
+        return EXECUTION_OK;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (WIFSIGNALED(command_statuses[i]) && WTERMSIG(command_statuses[i]) == SIGINT) {
+            printf("\n");
+            break;
+        }
+    }
+    free(command_statuses);
     jobsProcessNotifications(0);
     ExecutionResult result = EXECUTION_OK;
     for (size_t i = 0; i < count; i++) {

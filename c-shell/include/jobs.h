@@ -14,5 +14,12 @@ int jobsAdd(pid_t pgid, pid_t first_pid, const pid_t *pids, const char *const *c
 void jobsSetForeground(int active);
 void jobsProcessNotifications(int redraw_prompt);
 void jobsPrintActivities(void);
+int jobsTakeInteractiveSignal(void);
+int jobsHasStopped(void);
+int jobsAddStopped(pid_t pgid, pid_t first_pid, const pid_t *pids, const char *const *command_names, size_t process_count, const char *command_line);
+void jobsGiveTerminal(pid_t pgid);
+void jobsReclaimTerminal(void);
+void jobsPrepareChild(void);
+void jobsTerminateAll(void);
 
 #endif

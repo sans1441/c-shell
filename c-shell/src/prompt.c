@@ -58,7 +58,14 @@ char *readLine() {
 
         int result = poll(descriptors, 2, -1);
         if (result == -1) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                int signal_number = jobsTakeInteractiveSignal();
+                if (signal_number == SIGINT || signal_number == SIGTSTP) {
+                    printPath();
+                    length = 0;
+                }
+                continue;
+            }
             free(line);
             return NULL;
         }

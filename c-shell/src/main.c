@@ -23,6 +23,7 @@ int main() {
     initState(&state);
     jobsInit();
     jobsSetPromptCallback(printPath);
+    int eof_pending = 0;
 
     while (1) {
         printPath();
@@ -30,9 +31,16 @@ int main() {
         char *line = readLine();
 
         if (line == NULL) {
+            if (jobsHasStopped() && !eof_pending) {
+                printf("cshell: there are stopped jobs\n");
+                eof_pending = 1;
+                continue;
+            }
+            jobsTerminateAll();
             printf("\n");
             break;
         }
+        eof_pending = 0;
 
         int token_count = 0;
         Token *tokens = lexer(line, &token_count);
