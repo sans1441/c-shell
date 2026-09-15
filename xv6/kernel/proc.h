@@ -102,6 +102,14 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 
+  uint64 arrival_tick;
+  uint64 first_run_tick;
+  uint64 running_ticks;
+  uint64 waiting_ticks;
+  uint64 sleeping_ticks;
+  uint64 sleep_start_tick;
+  int has_run;
+
 #ifdef SCHEDULER_MLFQ
   int mlfq_queue;              // Queue number: 0 highest, 3 lowest
   int mlfq_slice_ticks;        // Ticks used in the current time slice

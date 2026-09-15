@@ -110,3 +110,24 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_schedstats(void)
+{
+  uint64 addr;
+  struct proc *p = myproc();
+  struct schedstats stats;
+
+  argaddr(0, &addr);
+  acquire(&p->lock);
+  stats.arrival_tick = p->arrival_tick;
+  stats.first_run_tick = p->first_run_tick;
+  stats.running_ticks = p->running_ticks;
+  stats.waiting_ticks = p->waiting_ticks;
+  stats.sleeping_ticks = p->sleeping_ticks;
+  release(&p->lock);
+
+  if (copyout(p->pagetable, p->sz, addr, (char *)&stats, sizeof(stats)) < 0)
+    return -1;
+  return 0;
+}

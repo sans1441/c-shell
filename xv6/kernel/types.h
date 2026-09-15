@@ -8,3 +8,11 @@ typedef unsigned int uint32;
 typedef unsigned long uint64;
 
 typedef uint64 pde_t;
+
+struct schedstats {
+  uint64 arrival_tick;
+  uint64 first_run_tick;
+  uint64 running_ticks;
+  uint64 waiting_ticks;
+  uint64 sleeping_ticks;
+};

@@ -78,6 +78,8 @@ CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 &
 
 ifeq ($(SCHEDULER),MLFQ)
 CFLAGS += -DSCHEDULER_MLFQ
+else ifeq ($(SCHEDULER),FIFO)
+CFLAGS += -DSCHEDULER_FIFO
 else ifneq ($(SCHEDULER),)
 $(error Unsupported scheduler: $(SCHEDULER))
 endif
@@ -152,6 +154,7 @@ UPROGS=\
 	$U/_forphan\
 	$U/_dorphan\
 	$U/_sync\
+	$U/_schedulertest\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

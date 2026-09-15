@@ -128,6 +128,13 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->arrival_tick = ticks;
+  p->first_run_tick = 0;
+  p->running_ticks = 0;
+  p->waiting_ticks = 0;
+  p->sleeping_ticks = 0;
+  p->sleep_start_tick = 0;
+  p->has_run = 0;
 // allocate mlfq parameters on initialisation
 #ifdef SCHEDULER_MLFQ
   p->mlfq_queue = 0;
@@ -177,6 +184,13 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  p->arrival_tick = 0;
+  p->first_run_tick = 0;
+  p->running_ticks = 0;
+  p->waiting_ticks = 0;
+  p->sleeping_ticks = 0;
+  p->sleep_start_tick = 0;
+  p->has_run = 0;
   
 // free mlfq parameters upon termination
 #ifdef SCHEDULER_MLFQ
@@ -475,11 +489,15 @@ scheduler(void)
           // Start after this process the next time this queue is searched.
           mlfq_next[cpu_id][queue] = (index + 1) % NPROC;
 
-          // Switch to chosen process.  It is the process's job
-          // to release its lock and then reacquire it
-          // before jumping back to us.
-          p->state = RUNNING;
-          c->proc = p;
+           // Switch to chosen process.  It is the process's job
+           // to release its lock and then reacquire it
+           // before jumping back to us.
+           p->state = RUNNING;
+           if (!p->has_run) {
+             p->first_run_tick = ticks;
+             p->has_run = 1;
+           }
+           c->proc = p;
           swtch(&c->context, &p->context);
 
           // Don't re-enable interrupts on release.
@@ -495,6 +513,44 @@ scheduler(void)
           break;
       }
     }
+#elif defined(SCHEDULER_FIFO)
+    // Select the oldest runnable process.  The selected process keeps
+    // the CPU across timer yields unless it blocks or exits.
+    struct proc *candidate = 0;
+    uint64 candidate_arrival = 0;
+    int candidate_pid = 0;
+
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE &&
+          (candidate == 0 || p->arrival_tick < candidate_arrival ||
+           (p->arrival_tick == candidate_arrival && p->pid < candidate_pid))) {
+        if (candidate != 0)
+          release(&candidate->lock);
+        candidate = p;
+        candidate_arrival = p->arrival_tick;
+        candidate_pid = p->pid;
+        continue;
+      }
+      release(&p->lock);
+    }
+
+    if (candidate != 0) {
+      p = candidate;
+      p->state = RUNNING;
+      if (!p->has_run) {
+        p->first_run_tick = ticks;
+        p->has_run = 1;
+      }
+      c->proc = p;
+      swtch(&c->context, &p->context);
+
+      // Don't re-enable interrupts on release.
+      mycpu()->intena = 0;
+      c->proc = 0;
+      found = 1;
+      release(&p->lock);
+    }
 #else
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
@@ -503,6 +559,10 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        if (!p->has_run) {
+          p->first_run_tick = ticks;
+          p->has_run = 1;
+        }
         c->proc = p;
         swtch(&c->context, &p->context);
 
@@ -621,6 +681,7 @@ sleep(void)
 
   acquire(&p->lock);
   if (p->chan != 0) {
+    p->sleep_start_tick = ticks;
     p->state = SLEEPING;
     sched();
   }
@@ -643,9 +704,31 @@ wakeup(void *chan)
       // If this waiting process has gotten so far as to actually
       // go to sleep, also set it back to RUNNING.
       if (p->state == SLEEPING) {
+        p->sleeping_ticks += ticks - p->sleep_start_tick;
         p->state = RUNNABLE;
       }
     }
+    release(&p->lock);
+  }
+}
+
+void
+schedstats_tick(void)
+{
+  struct proc *p;
+
+  p = myproc();
+  if (p != 0) {
+    acquire(&p->lock);
+    if (p->state == RUNNING)
+      p->running_ticks++;
+    release(&p->lock);
+  }
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state == RUNNABLE)
+      p->waiting_ticks++;
     release(&p->lock);
   }
 }

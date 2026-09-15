@@ -33,13 +33,21 @@ mlfqTimeSlice(int queue)
 static void
 mlfqTimerTick(struct proc *p)
 {
+  if (p->pid >= 4)
+    printk("mlfq_trace tick=%d pid=%d queue=%d event=sample\n",
+           ticks, p->pid, p->mlfq_queue);
+
   p->mlfq_slice_ticks++;
 
   if (p->mlfq_slice_ticks >= mlfqTimeSlice(p->mlfq_queue)) {
+    int old_queue = p->mlfq_queue;
     if (p->mlfq_queue < 3)
       p->mlfq_queue++;
 
     p->mlfq_slice_ticks = 0;
+    if (p->pid >= 4)
+      printk("mlfq_trace tick=%d pid=%d queue=%d event=demote from=%d\n",
+             ticks, p->pid, p->mlfq_queue, old_queue);
   }
 }
 
@@ -54,6 +62,9 @@ mlfqBoostAll(uint64 boost_tick)
       p->mlfq_queue = 0;
       p->mlfq_slice_ticks = 0;
       p->mlfq_last_boost = boost_tick;
+      if (p->pid >= 4)
+        printk("mlfq_trace tick=%ld pid=%d queue=0 event=boost\n",
+               boost_tick, p->pid);
     }
     release(&p->lock);
   }
@@ -231,6 +242,7 @@ clockintr()
 #endif
     wakeup(&ticks);
     release(&tickslock);
+    schedstats_tick();
   }
 
 #ifdef SCHEDULER_MLFQ
