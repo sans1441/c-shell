@@ -1,10 +1,44 @@
-**# instructions to run** 
+# Mini Project 1
+
+## C-Shell
 
 ```bash
-make all 
-./shell
+cd c-shell
+make all
+./shell.out
 ```
 
-AI usage: [link](https://docs.google.com/document/d/1z5ndPFXeqdf93M274x6HD0PtEf-EqHZeN8B-WOa7YCs/edit?usp=sharing)
+## xv6 Scheduler
 
-have fun. ;p
+```bash
+cd xv6
+make clean
+make qemu
+```
+
+Inside the xv6 shell, run:
+
+```text
+schedulertest
+```
+
+Run MLFQ or FIFO with one CPU for comparable measurements:
+
+```bash
+make clean
+make qemu SCHEDULER=MLFQ CPUS=1
+make clean
+make qemu SCHEDULER=FIFO CPUS=1
+```
+
+## Generate Plots
+
+From the `xv6` directory:
+
+```bash
+python3 plot_scheduler_results.py
+python3 plot_mlfq_timeline.py
+```
+
+The plots are saved as `scheduler_comparison.png` and `mlfq_timeline.png`.
+The report is available in `xv6/report.md`.
